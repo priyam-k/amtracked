@@ -22,6 +22,23 @@ Always read `PROJECT_STATE.md` at the start of a session to understand current s
 - Git config: `Priyam Kabra <priyamkabra7@gmail.com>`
 - Use standard `git commit -m "..."` — no `--no-verify`, no amended published commits without asking
 
+## Tech Stack
+
+- **Runtime**: Node.js + TypeScript
+- **Scraping**: Playwright (Chromium) + playwright-extra stealth
+- **DB**: SQLite via `better-sqlite3`
+- **Server**: Express 5
+- **Search API**: `POST https://www.amtrak.com/dotcom/journey-solution-option` (confirmed, currently blocked by Akamai 403 — see PROJECT_STATE.md)
+
+## Commands
+
+```bash
+npm run dev            # start API server (PORT=3000)
+npm run test:api       # test direct Amtrak API call from browser context
+npm run test:scraper   # test full Playwright form automation
+DEBUG_XHR=true npm run test:scraper  # verbose XHR + browser console logging
+```
+
 ## Key Conventions
 
 - Keep `.gitignore` up to date as new tooling/frameworks are added
