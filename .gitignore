@@ -28,6 +28,14 @@ out/
 *.log
 npm-debug.log*
 
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# Playwright browser binaries
+playwright-browsers/
+
 # Misc
 .cache/
 .turbo/
