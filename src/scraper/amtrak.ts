@@ -278,56 +278,34 @@ async function captureXHRResponses(
 ): Promise<Array<{ url: string; body: unknown }>> {
   const captured: Array<{ url: string; body: unknown }> = [];
 
-  page.on('response', async (res: Response) => {
-    const url = res.url();
-    if (isAnalytics(url)) return;
-    const status = res.status();
+  // Use page.route() instead of page.on('response') for the search endpoint.
+  // Angular posts to journey-solution-option then immediately navigates away; by the time
+  // the async response handler runs, the browser context has been replaced and res.json()
+  // silently fails. page.route() reads the body from Playwright's own network layer
+  // (not the browser JS context) so it's always available regardless of navigation.
+  await page.route('**/dotcom/journey-solution-option', async (route) => {
+    const response = await route.fetch();
+    const status = response.status();
+    const ct = response.headers()['content-type'] ?? '';
+    console.log(`[scraper] journey-solution-option HTTP ${status} (ct: ${ct})`);
 
-    const isSearchEndpoint =
-      url.includes('/dotcom/journey-solution-option') || url.includes('/journey-solution-option');
-
-    if (isSearchEndpoint) {
-      console.log(`[scraper] journey-solution-option HTTP ${status} (ct: ${res.headers()['content-type'] ?? 'none'})`);
-      if (status !== 200) {
-        try {
-          const errBody = await res.text();
-          console.log(`[scraper] error body: ${errBody.replace(/\s+/g, ' ').trim().slice(0, 400)}`);
-        } catch {}
-        return;
-      }
-      // Always capture the search endpoint regardless of content-type header
+    if (status === 200) {
       try {
-        const body = await res.json();
-        const keys = typeof body === 'object' && body !== null ? Object.keys(body as object) : [];
-        console.log(`[scraper] journey-solution-option keys: ${keys.join(', ')}`);
+        const body = await response.json();
+        const keys = Object.keys(body as object);
+        console.log(`[scraper] response keys: ${keys.join(', ')}`);
         console.log(`[scraper] body snippet: ${JSON.stringify(body).slice(0, 600)}`);
-        captured.push({ url, body });
-      } catch (e) {
-        try {
-          const rawText = await res.text();
-          console.log(`[scraper] journey-solution-option body (non-JSON): ${rawText.slice(0, 300)}`);
-        } catch {}
+        captured.push({ url: route.request().url(), body });
+      } catch {
+        const text = await response.text().catch(() => '');
+        console.log(`[scraper] journey-solution-option body (non-JSON): ${text.slice(0, 300)}`);
       }
-      return;
+    } else {
+      const text = await response.text().catch(() => '');
+      console.log(`[scraper] error body: ${text.replace(/\s+/g, ' ').trim().slice(0, 400)}`);
     }
 
-    if (url.includes('amtrak.com') && !url.includes('xSRxOGcc') && (status === 403 || status >= 500)) {
-      console.log(`[scraper] HTTP ${status}: ${url.slice(0, 120)}`);
-    }
-
-    const ct = res.headers()['content-type'] ?? '';
-    if (!ct.includes('application/json') && !ct.includes('text/json')) return;
-
-    try {
-      const body = await res.json();
-      if (DEBUG_XHR) {
-        console.log('[xhr]', url);
-        console.log('     ', JSON.stringify(body).slice(0, 400));
-      }
-      if (looksLikeSearch(url, body)) {
-        captured.push({ url, body });
-      }
-    } catch {}
+    await route.fulfill({ response });
   });
 
   return captured;
@@ -393,16 +371,10 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
     });
   }
 
-  // Capture request details for the search API endpoint
+  // Log the search POST for debugging (route handler also captures it, but this confirms the request was made)
   page.on('request', (req) => {
-    const url = req.url();
-    if (url.includes('/dotcom/') || url.includes('/journey-solution')) {
-      console.log(`[search-req] ${req.method()} ${url}`);
-      const body = req.postData();
-      if (body) console.log(`[search-req-body] ${body.slice(0, 500)}`);
-      const headers = req.headers();
-      const relevantHeaders = Object.entries(headers).filter(([k]) => !['cookie', 'sec-fetch'].some(s => k.includes(s)));
-      console.log(`[search-req-headers]`, JSON.stringify(Object.fromEntries(relevantHeaders)).slice(0, 400));
+    if (req.url().includes('/dotcom/journey-solution-option')) {
+      console.log(`[scraper] → POST journey-solution-option (referer: ${req.headers()['referer'] ?? 'none'})`);
     }
   });
 
