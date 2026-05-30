@@ -283,17 +283,35 @@ async function captureXHRResponses(
     if (isAnalytics(url)) return;
     const status = res.status();
 
-    // Always log journey-solution-option responses so we see status + body for debugging
-    if (url.includes('/dotcom/journey-solution-option') || url.includes('/journey-solution')) {
-      console.log(`[scraper] journey-solution-option HTTP ${status}`);
+    const isSearchEndpoint =
+      url.includes('/dotcom/journey-solution-option') || url.includes('/journey-solution-option');
+
+    if (isSearchEndpoint) {
+      console.log(`[scraper] journey-solution-option HTTP ${status} (ct: ${res.headers()['content-type'] ?? 'none'})`);
       if (status !== 200) {
         try {
           const errBody = await res.text();
-          console.log(`[scraper] non-200 body: ${errBody.replace(/\s+/g, ' ').trim().slice(0, 400)}`);
+          console.log(`[scraper] error body: ${errBody.replace(/\s+/g, ' ').trim().slice(0, 400)}`);
         } catch {}
-        return; // don't try to parse as JSON below
+        return;
       }
-    } else if (url.includes('amtrak.com') && !url.includes('xSRxOGcc') && (status === 403 || status >= 500)) {
+      // Always capture the search endpoint regardless of content-type header
+      try {
+        const body = await res.json();
+        const keys = typeof body === 'object' && body !== null ? Object.keys(body as object) : [];
+        console.log(`[scraper] journey-solution-option keys: ${keys.join(', ')}`);
+        console.log(`[scraper] body snippet: ${JSON.stringify(body).slice(0, 600)}`);
+        captured.push({ url, body });
+      } catch (e) {
+        try {
+          const rawText = await res.text();
+          console.log(`[scraper] journey-solution-option body (non-JSON): ${rawText.slice(0, 300)}`);
+        } catch {}
+      }
+      return;
+    }
+
+    if (url.includes('amtrak.com') && !url.includes('xSRxOGcc') && (status === 403 || status >= 500)) {
       console.log(`[scraper] HTTP ${status}: ${url.slice(0, 120)}`);
     }
 
