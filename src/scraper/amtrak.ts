@@ -71,105 +71,74 @@ async function dismissCookieBanner(page: Page): Promise<void> {
   await page.waitForTimeout(300);
 }
 
-// Booking widget selectors:
-//   From: input[aria-label="From"]  (NOT the Train Status "departure station" input)
-//   To:   input[aria-label="To"]
-//   Autocomplete options are pre-loaded in DOM as div[role="option"] inside the listbox.
-//   The listbox is hidden by "ads-hidden" class and shown on focus/click by Angular.
+// Fills a station field using Angular's natural dropdown flow:
+// click to focus → wait for dropdown to open → click the matching option.
+// NOT using force-show CSS tricks because those don't update Angular's reactive form model.
 async function fillStation(page: Page, fieldLabel: 'From' | 'To', stationCode: string): Promise<void> {
   const inputLocator = page.locator(`input[aria-label="${fieldLabel}"]`).first();
   await inputLocator.waitFor({ state: 'visible', timeout: 15000 });
 
-  // Click/focus the input
-  await inputLocator.focus();
-  await page.waitForTimeout(300);
-  await inputLocator.click({ timeout: 5000 }).catch(() =>
-    inputLocator.click({ force: true, timeout: 3000 }).catch(() => {})
-  );
-  await page.waitForTimeout(800);
-
-  // Force-show the listbox BEFORE typing — pre-loaded options are visible at this point
-  await page.evaluate((label) => {
-    const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
-    const container = input?.closest<HTMLElement>('am-form-field-new');
-    const listbox = container?.querySelector<HTMLElement>('[role="listbox"]');
-    if (listbox) {
-      listbox.classList.remove('ads-hidden');
-      listbox.style.display = 'block';
-    }
-    container?.setAttribute('aria-expanded', 'true');
-    input?.setAttribute('aria-expanded', 'true');
-  }, fieldLabel);
-
-  await page.waitForTimeout(300);
-
-  // Try to click the matching pre-loaded option BEFORE typing
-  // Scope selector to this field's container to avoid clicking the other field's dropdown
   const containerSelector = `am-form-field-new:has(input[aria-label="${fieldLabel}"])`;
   const codeRegex = new RegExp(`\\(${stationCode}\\)`);
-  const preloadedMatch = page.locator(`${containerSelector} div[role="option"]`).filter({ hasText: codeRegex }).first();
 
-  if (await preloadedMatch.isVisible({ timeout: 1500 }).catch(() => false)) {
-    const txt = await preloadedMatch.textContent().catch(() => '');
-    await preloadedMatch.click({ timeout: 5000 });
-    console.log(`[scraper] Selected pre-loaded: "${txt?.trim().slice(0, 70)}"`);
-    await page.keyboard.press('Tab'); // Tab closes dropdown and moves to next field
-    await page.waitForTimeout(600);
-    return;
+  // Click the input — Angular should open the dropdown and show pre-loaded options
+  await inputLocator.click({ timeout: 5000 });
+  await page.waitForTimeout(600);
+
+  // Wait for the dropdown to naturally open (Angular removes ads-hidden from listbox)
+  const dropdownOpen = await page
+    .locator(`${containerSelector} [role="listbox"]`)
+    .first()
+    .isVisible({ timeout: 2500 })
+    .catch(() => false);
+
+  if (!dropdownOpen) {
+    // Dropdown didn't open from click — press ArrowDown to force Angular to open it
+    await page.keyboard.press('ArrowDown');
+    await page.waitForTimeout(1000);
   }
 
-  // Pre-loaded option not found.
-  // Strategy: press ArrowDown (opens dropdown with Angular's internal state set to expanded),
-  // then use JS to click the matching option (Playwright visibility check often fails for
-  // absolutely-positioned dropdowns but JS click works when Angular state is correct).
-  console.log(`[scraper] Pre-loaded "${stationCode}" not in list; using ArrowDown+JS-click...`);
+  // Try to click the matching option while Angular thinks the dropdown is open
+  const option = page.locator(`${containerSelector} div[role="option"]`).filter({ hasText: codeRegex }).first();
+  const optionVisible = await option.isVisible({ timeout: 2000 }).catch(() => false);
 
-  await page.keyboard.press('ArrowDown');
-  await page.waitForTimeout(2000); // let Angular render the open dropdown
-
-  if (DEBUG_XHR) {
-    const { writeFileSync } = await import('fs');
-    writeFileSync(`/tmp/amtrak-dropdown-${fieldLabel}.png`, await page.screenshot());
-  }
-
-  // Use JS to find and click the matching option, scoped to THIS field's container
-  const jsClicked = await page.evaluate(
-    ({ label, code }) => {
-      const input = document.querySelector<HTMLInputElement>(`input[aria-label="${label}"]`);
-      const container = input?.closest<HTMLElement>('am-form-field-new');
-      if (!container) return null;
-
-      const options = Array.from(container.querySelectorAll<HTMLElement>('div[role="option"]'));
-      const match = options.find((o) => o.textContent?.includes(`(${code})`));
-      if (match) {
-        match.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-        match.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
-        match.click();
-        return match.textContent?.trim().slice(0, 70) ?? null;
-      }
-      const first = options[0];
-      if (first) {
-        first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
-        first.click();
-        return `FIRST: ${first.textContent?.trim().slice(0, 70)}`;
-      }
-      return null;
-    },
-    { label: fieldLabel, code: stationCode }
-  );
-
-  if (jsClicked) {
-    console.log(`[scraper] JS-clicked: "${jsClicked}"`);
+  if (optionVisible) {
+    const txt = await option.textContent().catch(() => '');
+    await option.click({ timeout: 5000 });
+    console.log(`[scraper] ${fieldLabel} → "${txt?.trim().slice(0, 70)}"`);
   } else {
-    console.warn(`[scraper] No options found via JS for ${stationCode}, pressing Enter`);
-    await page.keyboard.press('Enter');
+    // Options not visible or no match — type the station code to trigger Angular's filter
+    console.log(`[scraper] ${fieldLabel} option not visible, typing "${stationCode}" to filter`);
+    await inputLocator.fill('');
+    await page.waitForTimeout(200);
+    await inputLocator.type(stationCode, { delay: 60 });
+    await page.waitForTimeout(1200); // wait for Angular to filter
+
+    const filtered = page.locator(`${containerSelector} div[role="option"]`).filter({ hasText: codeRegex }).first();
+    if (await filtered.isVisible({ timeout: 2000 }).catch(() => false)) {
+      const txt = await filtered.textContent().catch(() => '');
+      await filtered.click({ timeout: 5000 });
+      console.log(`[scraper] ${fieldLabel} typed → "${txt?.trim().slice(0, 70)}"`);
+    } else {
+      // Last resort: use first visible option
+      const firstOption = page.locator(`${containerSelector} div[role="option"]`).first();
+      if (await firstOption.isVisible({ timeout: 1000 }).catch(() => false)) {
+        await firstOption.click();
+        console.log(`[scraper] ${fieldLabel} → first available option`);
+      } else {
+        console.warn(`[scraper] ${fieldLabel}: could not find option for ${stationCode}`);
+        await page.keyboard.press('Enter');
+      }
+    }
   }
 
   await page.waitForTimeout(400);
-
-  // Close the dropdown: Tab moves focus out and closes Angular dropdown
   await page.keyboard.press('Tab');
-  await page.waitForTimeout(600);
+  await page.waitForTimeout(500);
+
+  // Confirm the input has a value (Angular form control updated)
+  const val = await inputLocator.inputValue().catch(() => '');
+  console.log(`[scraper] ${fieldLabel} input value: "${val.slice(0, 60)}"`);
 }
 
 async function setDate(page: Page, dateStr: string): Promise<void> {
@@ -314,16 +283,18 @@ async function captureXHRResponses(
     if (isAnalytics(url)) return;
     const status = res.status();
 
-    if (url.includes('amtrak.com') && !url.includes('xSRxOGcc') && (status === 403 || status >= 500)) {
-      console.log(`[scraper] HTTP ${status}: ${url.slice(0, 120)}`);
-      // Log response body to distinguish Akamai block (HTML) from backend error (JSON/text)
-      if (url.includes('/dotcom/') || url.includes('/journey-solution')) {
+    // Always log journey-solution-option responses so we see status + body for debugging
+    if (url.includes('/dotcom/journey-solution-option') || url.includes('/journey-solution')) {
+      console.log(`[scraper] journey-solution-option HTTP ${status}`);
+      if (status !== 200) {
         try {
-          const body403 = await res.text();
-          const snippet = body403.replace(/\s+/g, ' ').trim().slice(0, 300);
-          console.log(`[scraper] 403 body: ${snippet}`);
+          const errBody = await res.text();
+          console.log(`[scraper] non-200 body: ${errBody.replace(/\s+/g, ' ').trim().slice(0, 400)}`);
         } catch {}
+        return; // don't try to parse as JSON below
       }
+    } else if (url.includes('amtrak.com') && !url.includes('xSRxOGcc') && (status === 403 || status >= 500)) {
+      console.log(`[scraper] HTTP ${status}: ${url.slice(0, 120)}`);
     }
 
     const ct = res.headers()['content-type'] ?? '';
