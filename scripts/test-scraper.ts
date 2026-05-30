@@ -13,7 +13,7 @@ async function main() {
   const params = {
     origin: process.argv[2] ?? 'NYP',
     destination: process.argv[3] ?? 'WAS',
-    travel_date: process.argv[4] ?? '2025-07-01',
+    travel_date: process.argv[4] ?? '2026-07-15',
     passengers: 1,
   };
 

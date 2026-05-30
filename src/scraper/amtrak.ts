@@ -314,9 +314,16 @@ async function captureXHRResponses(
     if (isAnalytics(url)) return;
     const status = res.status();
 
-    // Log blocked requests (403 = Akamai blocking our search API call)
     if (url.includes('amtrak.com') && !url.includes('xSRxOGcc') && (status === 403 || status >= 500)) {
       console.log(`[scraper] HTTP ${status}: ${url.slice(0, 120)}`);
+      // Log response body to distinguish Akamai block (HTML) from backend error (JSON/text)
+      if (url.includes('/dotcom/') || url.includes('/journey-solution')) {
+        try {
+          const body403 = await res.text();
+          const snippet = body403.replace(/\s+/g, ' ').trim().slice(0, 300);
+          console.log(`[scraper] 403 body: ${snippet}`);
+        } catch {}
+      }
     }
 
     const ct = res.headers()['content-type'] ?? '';
@@ -335,6 +342,51 @@ async function captureXHRResponses(
   });
 
   return captured;
+}
+
+// Wait for Akamai's JS challenge to complete. Akamai POSTs sensor data to a hidden endpoint;
+// 201 responses mean the session is being validated. We need ≥2 before touching the form.
+async function waitForAkamaiChallenge(page: Page): Promise<void> {
+  let completions = 0;
+  const onResponse = (res: Response) => {
+    if (res.url().includes('xSRxOGcc') && res.status() === 201) completions++;
+  };
+  page.on('response', onResponse);
+
+  const deadline = Date.now() + 12000;
+  while (Date.now() < deadline && completions < 2) {
+    await page.waitForTimeout(400);
+  }
+  page.off('response', onResponse);
+  console.log(`[scraper] Akamai challenge completions: ${completions}`);
+}
+
+// Simulate realistic human behavior to build Akamai's behavioral trust score
+async function simulateHumanPresence(page: Page): Promise<void> {
+  const rand = (min: number, max: number) => min + Math.random() * (max - min);
+  await page.mouse.move(rand(300, 700), rand(150, 350));
+  await page.waitForTimeout(rand(300, 600));
+  await page.evaluate(() => window.scrollBy({ top: 120, behavior: 'smooth' }));
+  await page.waitForTimeout(rand(500, 900));
+  await page.mouse.move(rand(400, 800), rand(250, 500));
+  await page.waitForTimeout(rand(300, 500));
+  await page.evaluate(() => window.scrollBy({ top: -120, behavior: 'smooth' }));
+  await page.waitForTimeout(rand(400, 700));
+}
+
+// Wait for the FIND TRAINS button to become naturally valid (aria-disabled removed by Angular).
+// Returns true if form became valid; false if it timed out (we'll force-click as fallback).
+async function waitForFormValid(page: Page, timeoutMs = 8000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const valid = await page.evaluate(() => {
+      const btn = document.querySelector<HTMLButtonElement>('button[aria-label="FIND TRAINS"]');
+      return btn?.getAttribute('aria-disabled') !== 'true';
+    });
+    if (valid) return true;
+    await page.waitForTimeout(250);
+  }
+  return false;
 }
 
 export async function searchTrains(params: SearchParams): Promise<SearchResult> {
@@ -368,8 +420,14 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
   try {
     console.log('[scraper] Loading Amtrak homepage...');
     await page.goto('https://www.amtrak.com/', { waitUntil: 'load', timeout: 30000 });
-    await page.waitForTimeout(2000);
+    await page.waitForTimeout(1500);
+
+    // Wait for Akamai's JS challenge before touching the form
+    await waitForAkamaiChallenge(page);
     await dismissCookieBanner(page);
+
+    // Simulate human presence to build behavioral trust score
+    await simulateHumanPresence(page);
 
     // Wait for the booking widget's From input to be visible (not the Train Status one)
     await page.waitForSelector('input[aria-label="From"]', {
@@ -401,25 +459,16 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
       console.log('[scraper] Step 3 (after date set) screenshot saved');
     }
 
-    // Wait a moment before clicking search
+    // Short pause before submitting
     await page.waitForTimeout(500);
 
     const urlBefore = page.url();
 
-    // Check form validity before clicking FIND TRAINS
-    const btnState = await page.evaluate(() => {
-      const btn = document.querySelector<HTMLButtonElement>('button[aria-label="FIND TRAINS"]');
-      return { ariaDisabled: btn?.getAttribute('aria-disabled'), classes: btn?.className.slice(0, 60) };
-    });
-    console.log('[scraper] FIND TRAINS button state:', JSON.stringify(btnState));
-
-    // Multiple approaches to trigger search
-    // 1. Playwright native click on all FIND TRAINS buttons (there may be 2)
     const allFindTrainsBtns = page.locator('button[aria-label="FIND TRAINS"]');
     const btnCount = await allFindTrainsBtns.count();
     console.log(`[scraper] Found ${btnCount} FIND TRAINS button(s)`);
 
-    // Hook into history API AND hashchange to capture Angular router navigation
+    // Hook into history API to capture Angular router navigation
     await page.evaluate(() => {
       (window as any)._amtrakNavUrls = [];
       const orig = history.pushState.bind(history);
@@ -437,50 +486,52 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
       });
     });
 
-    // Root cause: FIND TRAINS has pointer-events:none when aria-disabled is set.
-    // Fix: remove pointer-events restriction and aria-disabled, then click.
-    const btnFixed = await page.evaluate(() => {
-      const btns = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-label="FIND TRAINS"]'));
-      let fixed = 0;
-      for (const btn of btns) {
-        btn.style.setProperty('pointer-events', 'auto', 'important');
-        btn.style.setProperty('opacity', '1', 'important');
-        btn.removeAttribute('aria-disabled');
-        btn.removeAttribute('disabled');
-        fixed++;
-      }
-      return fixed;
-    });
-    console.log(`[scraper] Fixed pointer-events on ${btnFixed} FIND TRAINS button(s)`);
+    // Wait for Angular's form to become valid (station + date fields properly populated).
+    // If the form is valid, FIND TRAINS loses aria-disabled and we can click it naturally.
+    // This is critical: if we force-click while the form is invalid, Angular sends empty
+    // station codes and the backend returns 403.
+    const formValid = await waitForFormValid(page);
+    console.log(`[scraper] Form valid: ${formValid}`);
 
-    // Verify the fix worked
-    const afterFix = await page.evaluate(() => {
-      const btn = document.querySelector<HTMLButtonElement>('button[aria-label="FIND TRAINS"]');
-      if (!btn) return null;
-      const rect = btn.getBoundingClientRect();
-      const cx = rect.x + rect.width / 2, cy = rect.y + rect.height / 2;
-      const top = document.elementFromPoint(cx, cy);
-      return {
-        pointerEventsNow: getComputedStyle(btn).pointerEvents,
-        topElTag: top?.tagName,
-        topElAria: top?.getAttribute('aria-label'),
-        sameAsBtn: top === btn,
-      };
-    });
-    console.log('[scraper] After fix:', JSON.stringify(afterFix));
+    if (!formValid) {
+      // Form didn't become valid — check what Angular thinks the field values are
+      const formState = await page.evaluate(() => {
+        const fromInput = document.querySelector<HTMLInputElement>('input[aria-label="From"]');
+        const toInput = document.querySelector<HTMLInputElement>('input[aria-label="To"]');
+        const dateInput = document.querySelector<HTMLInputElement>('input.departed-picker');
+        const btn = document.querySelector<HTMLButtonElement>('button[aria-label="FIND TRAINS"]');
+        return {
+          from: fromInput?.value,
+          to: toInput?.value,
+          date: dateInput?.value,
+          ariaDisabled: btn?.getAttribute('aria-disabled'),
+        };
+      });
+      console.log('[scraper] Form state (invalid):', JSON.stringify(formState));
 
-    // Now click — pointer-events is restored so click reaches the button
+      // Force-enable the button as fallback — Angular will still send whatever it has
+      await page.evaluate(() => {
+        const btns = Array.from(document.querySelectorAll<HTMLButtonElement>('button[aria-label="FIND TRAINS"]'));
+        for (const btn of btns) {
+          btn.style.setProperty('pointer-events', 'auto', 'important');
+          btn.style.setProperty('opacity', '1', 'important');
+          btn.removeAttribute('aria-disabled');
+          btn.removeAttribute('disabled');
+        }
+      });
+    }
+
+    // Click FIND TRAINS
     for (let i = 0; i < btnCount; i++) {
       const btn = allFindTrainsBtns.nth(i);
       const box = await btn.boundingBox().catch(() => null);
       if (box && box.width > 0) {
-        console.log(`[scraper] FIND TRAINS #${i} at (${Math.round(box.x + box.width / 2)}, ${Math.round(box.y + box.height / 2)})`);
+        console.log(`[scraper] Clicking FIND TRAINS #${i}`);
         await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
         await page.waitForTimeout(2000);
 
         const newUrl = page.url();
-        const anyNewXhr = captured.length > 0;
-        if (newUrl !== urlBefore || anyNewXhr) {
+        if (newUrl !== urlBefore || captured.length > 0) {
           console.log('[scraper] Search triggered after button', i);
           break;
         }
