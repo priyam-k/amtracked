@@ -57,9 +57,15 @@ export async function searchWithSession(
   const body = buildRequestBody(params);
   const traceId = makeTraceId();
 
-  const resp = await fetch(SEARCH_URL, {
-    method: 'POST',
-    headers: {
+  const abort = new AbortController();
+  const timeout = setTimeout(() => abort.abort(), 15000);
+
+  let resp: Response;
+  try {
+    resp = await fetch(SEARCH_URL, {
+      method: 'POST',
+      signal: abort.signal,
+      headers: {
       'content-type': 'application/json',
       'accept': 'application/json, text/plain, */*',
       'accept-language': 'en-US,en;q=0.9',
@@ -77,14 +83,21 @@ export async function searchWithSession(
     },
     body: JSON.stringify(body),
   });
+  } catch (err) {
+    clearTimeout(timeout);
+    const isTimeout = (err as Error).name === 'AbortError';
+    throw new Error(isTimeout ? 'Request timed out (15s) — session may be exhausted' : String(err));
+  }
+  clearTimeout(timeout);
 
   console.log(`[session-client] HTTP ${resp.status} for ${params.origin}→${params.destination} ${params.travel_date}`);
 
   if (!resp.ok) {
     const errText = await resp.text();
-    const isAkamaiBlock = errText.includes('Access Denied') || errText.includes('Reference #');
+    const isSessionDead = errText.includes('Access Denied') || errText.includes('Reference #')
+      || errText.includes('502 Bad Gateway') || errText.includes('Error Page');
     throw new Error(
-      isAkamaiBlock
+      isSessionDead
         ? `Akamai blocked the request (${resp.status}) — session cookies may have expired`
         : `HTTP ${resp.status}: ${errText.slice(0, 200)}`
     );
