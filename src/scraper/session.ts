@@ -13,8 +13,33 @@ interface StoredSession {
 
 let memCache: StoredSession | null = null;
 
+/**
+ * Parse a full cURL command (as copied from Chrome DevTools "Copy as cURL") and
+ * extract the cookie string. Handles both single and double quotes, multi-line
+ * commands with backslash continuations, and both -b / --cookie flags.
+ *
+ * Returns null if no cookie flag is found.
+ */
+export function parseCurlCommand(curl: string): string | null {
+  // Join continuation lines so we can match across line breaks
+  const flat = curl.replace(/\\\s*\n\s*/g, ' ');
+  // Match -b 'value' or --cookie 'value' (single or double quotes)
+  const match =
+    flat.match(/(?:-b|--cookie)\s+'((?:[^'\\]|\\.)*)'/) ??
+    flat.match(/(?:-b|--cookie)\s+"((?:[^"\\]|\\.)*)"/);
+  return match ? match[1] : null;
+}
+
 export function getSession(): string | null {
-  // 1. Env var (highest priority — user-pasted from DevTools cURL)
+  // 1a. Full cURL command pasted (AMTRAK_CURL) — extract cookies from it
+  const envCurl = process.env.AMTRAK_CURL?.trim();
+  if (envCurl) {
+    const cookies = parseCurlCommand(envCurl);
+    if (cookies) return cookies;
+    console.warn('[session] AMTRAK_CURL set but no -b cookie flag found in it');
+  }
+
+  // 1b. Just the cookie string (AMTRAK_COOKIES)
   const envCookies = process.env.AMTRAK_COOKIES?.trim();
   if (envCookies) return envCookies;
 
