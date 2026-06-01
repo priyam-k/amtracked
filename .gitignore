@@ -43,3 +43,4 @@ playwright-browsers/
 # Test/dev scratch files (may contain real session tokens)
 testing/
 output.txt
+.amtrak-curl

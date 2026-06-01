@@ -30,8 +30,25 @@ export function parseCurlCommand(curl: string): string | null {
   return match ? match[1] : null;
 }
 
+// Dedicated file for pasting a full cURL command — no escaping needed, just paste and save.
+// Checked relative to cwd (project root) so it's always easy to find.
+const CURL_FILE = path.join(process.cwd(), '.amtrak-curl');
+
 export function getSession(): string | null {
-  // 1a. Full cURL command pasted (AMTRAK_CURL) — extract cookies from it
+  // 1. .amtrak-curl file in project root — paste the raw DevTools cURL command here,
+  //    multiline and unmodified. Easiest option for humans.
+  try {
+    if (existsSync(CURL_FILE)) {
+      const content = readFileSync(CURL_FILE, 'utf-8').trim();
+      if (content) {
+        const cookies = parseCurlCommand(content);
+        if (cookies) return cookies;
+        console.warn('[session] .amtrak-curl exists but no -b cookie flag found — check the file contents');
+      }
+    }
+  } catch {}
+
+  // 2. AMTRAK_CURL env var (single-line cURL command)
   const envCurl = process.env.AMTRAK_CURL?.trim();
   if (envCurl) {
     const cookies = parseCurlCommand(envCurl);
@@ -39,7 +56,7 @@ export function getSession(): string | null {
     console.warn('[session] AMTRAK_CURL set but no -b cookie flag found in it');
   }
 
-  // 1b. Just the cookie string (AMTRAK_COOKIES)
+  // 3. AMTRAK_COOKIES env var (just the cookie string, no parsing needed)
   const envCookies = process.env.AMTRAK_COOKIES?.trim();
   if (envCookies) return envCookies;
 
