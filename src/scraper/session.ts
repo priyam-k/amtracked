@@ -106,14 +106,8 @@ export function setSession(cookies: string): void {
     writeFileSync(SESSION_FILE, JSON.stringify(session));
   } catch {}
   const budget = abckBudgetState(cookies);
-  if (budget === 'initial') {
-    console.log('[session] Stored session cookies — _abck budget=0 (initial). Expect ~4-5 requests before Akamai blocks.');
-    console.log('[session] For more requests: do a full search on amtrak.com (form submit), then re-copy the cURL.');
-  } else if (budget === 'refreshed') {
-    console.log('[session] Stored session cookies — _abck budget=-1 (refreshed). High request allowance.');
-  } else {
-    console.log('[session] Stored session cookies (budget state unknown).');
-  }
+  const budgetNote = budget === 'refreshed' ? ' (_abck refreshed — high allowance)' : '';
+  console.log(`[session] Stored session cookies${budgetNote} (valid ~8 min)`);
 }
 
 export function clearSession(): void {
