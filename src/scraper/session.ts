@@ -20,6 +20,25 @@ let memCache: StoredSession | null = null;
  *
  * Returns null if no cookie flag is found.
  */
+/**
+ * Inspect the _abck cookie to determine the Akamai budget state.
+ *
+ * _abck format: {hash}~{budget}~{sensor_data}~{flags}
+ *   budget = -1  → cookie was refreshed by Akamai's JS after human interaction.
+ *                  High request allowance (effectively unlimited in practice).
+ *   budget =  0  → initial cookie issued on first page load, no interaction proof.
+ *                  Only ~4-5 API calls before Akamai starts blocking.
+ *
+ * Returns 'refreshed' | 'initial' | 'unknown'.
+ */
+export function abckBudgetState(cookieHeader: string): 'refreshed' | 'initial' | 'unknown' {
+  const match = cookieHeader.match(/_abck=([^;]+)/);
+  if (!match) return 'unknown';
+  const parts = decodeURIComponent(match[1]).split('~');
+  if (parts.length < 2) return 'unknown';
+  return parts[1] === '-1' ? 'refreshed' : parts[1] === '0' ? 'initial' : 'unknown';
+}
+
 export function parseCurlCommand(curl: string): string | null {
   // Join continuation lines so we can match across line breaks
   const flat = curl.replace(/\\\s*\n\s*/g, ' ');
@@ -86,7 +105,15 @@ export function setSession(cookies: string): void {
   try {
     writeFileSync(SESSION_FILE, JSON.stringify(session));
   } catch {}
-  console.log('[session] Stored Akamai session cookies (valid ~8 min)');
+  const budget = abckBudgetState(cookies);
+  if (budget === 'initial') {
+    console.log('[session] Stored session cookies — _abck budget=0 (initial). Expect ~4-5 requests before Akamai blocks.');
+    console.log('[session] For more requests: do a full search on amtrak.com (form submit), then re-copy the cURL.');
+  } else if (budget === 'refreshed') {
+    console.log('[session] Stored session cookies — _abck budget=-1 (refreshed). High request allowance.');
+  } else {
+    console.log('[session] Stored session cookies (budget state unknown).');
+  }
 }
 
 export function clearSession(): void {

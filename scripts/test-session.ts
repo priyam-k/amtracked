@@ -15,7 +15,7 @@
  * (the scraper saves cookies to ~/.amtracked/session.json automatically).
  */
 import 'dotenv/config';
-import { getSession, sessionAge } from '../src/scraper/session';
+import { getSession, sessionAge, abckBudgetState } from '../src/scraper/session';
 import { searchWithSession } from '../src/scraper/session-client';
 import { SearchParams } from '../src/types';
 
@@ -55,7 +55,12 @@ async function main(): Promise<void> {
   }
 
   const age = sessionAge();
-  console.log(`Session cookies found${age !== null ? ` (${age}s old)` : ''}`);
+  const budget = abckBudgetState(cookies);
+  const budgetMsg =
+    budget === 'refreshed' ? '_abck=refreshed (-1) ✓ high allowance' :
+    budget === 'initial'   ? '_abck=initial (0) ⚠ ~4-5 requests max — do a full amtrak.com search then re-copy cURL for more' :
+                             '_abck state unknown';
+  console.log(`Session cookies found${age !== null ? ` (${age}s old)` : ''} | ${budgetMsg}`);
   console.log(`Running ${QUERIES.length} queries to test query-agnostic nature...\n`);
 
   let passed = 0;
