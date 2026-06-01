@@ -1,5 +1,5 @@
 import { getDb } from './client';
-import { PriceSnapshot, Route, SearchResult, Train } from '../types';
+import { Alert, AlertWithRoute, PriceSnapshot, Route, SearchResult, Train } from '../types';
 
 // ─── Routes ─────────────────────────────────────────────────────────────────
 
@@ -101,6 +101,37 @@ export function getLatestSnapshot(
 
 // ─── Alerts ──────────────────────────────────────────────────────────────────
 
-export function getAlerts() {
-  return getDb().prepare('SELECT * FROM alerts WHERE active = 1').all();
+export function createAlert(
+  routeId: number,
+  travelDate: string,
+  maxPriceCents: number,
+  notifyMethod = 'console'
+): Alert {
+  const db = getDb();
+  const info = db.prepare(`
+    INSERT INTO alerts (route_id, travel_date, max_price_cents, notify_method)
+    VALUES (?, ?, ?, ?)
+  `).run(routeId, travelDate, maxPriceCents, notifyMethod);
+  return db.prepare('SELECT * FROM alerts WHERE id = ?').get(info.lastInsertRowid) as Alert;
+}
+
+export function getAlerts(): Alert[] {
+  return getDb().prepare('SELECT * FROM alerts ORDER BY created_at DESC').all() as Alert[];
+}
+
+export function deleteAlert(id: number): void {
+  getDb().prepare('DELETE FROM alerts WHERE id = ?').run(id);
+}
+
+// Returns active alerts with origin/destination joined from routes,
+// filtered to travel_dates that haven't passed yet.
+export function getActiveAlerts(): AlertWithRoute[] {
+  return getDb().prepare(`
+    SELECT a.*, r.origin, r.destination
+    FROM alerts a
+    JOIN routes r ON r.id = a.route_id
+    WHERE a.active = 1
+      AND (a.travel_date IS NULL OR a.travel_date >= date('now'))
+    ORDER BY a.travel_date ASC
+  `).all() as AlertWithRoute[];
 }

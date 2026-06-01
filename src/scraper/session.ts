@@ -3,8 +3,9 @@ import path from 'path';
 import os from 'os';
 
 const SESSION_FILE = path.join(os.homedir(), '.amtracked', 'session.json');
-// Conservative TTL — real expiry is ~10 min based on observations, use 8 min to be safe
-const SESSION_TTL_MS = 8 * 60 * 1000;
+// Token lasts hours (rate-limited by burst, not by time). Cache for 24h;
+// actual expiry is detected by 403 response, not by this TTL.
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface StoredSession {
   cookies: string;

@@ -53,5 +53,12 @@ export interface Alert {
   travel_date: string | null;
   max_price_cents: number | null;
   notify_method: string;
-  active: boolean;
+  active: number;
+  created_at: string;
+}
+
+// Alert joined with its route — what the scheduler actually works with
+export interface AlertWithRoute extends Alert {
+  origin: string;
+  destination: string;
 }
