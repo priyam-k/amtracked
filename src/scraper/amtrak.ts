@@ -1,5 +1,7 @@
 import { Page, Response } from 'playwright';
 import { getBrowserContext } from './browser';
+import { getSession, setSession } from './session';
+import { searchWithSession } from './session-client';
 import { FareOption, SearchParams, SearchResult, Train } from '../types';
 
 const DEBUG_XHR = process.env.DEBUG_XHR === 'true';
@@ -357,6 +359,17 @@ async function waitForFormValid(page: Page, timeoutMs = 8000): Promise<boolean> 
 }
 
 export async function searchTrains(params: SearchParams): Promise<SearchResult> {
+  // Fast path: use cached session cookies (from manual paste or previous Playwright run)
+  const session = getSession();
+  if (session) {
+    console.log('[scraper] Using cached session cookies (no browser needed)');
+    try {
+      return await searchWithSession(session, params);
+    } catch (err) {
+      console.warn('[scraper] Session request failed, falling back to Playwright:', (err as Error).message);
+    }
+  }
+
   const ctx = await getBrowserContext();
   const page = await ctx.newPage();
   const captured = await captureXHRResponses(page);
@@ -385,6 +398,17 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
 
     // Wait for Akamai's JS challenge before touching the form
     await waitForAkamaiChallenge(page);
+
+    // If Playwright got past Akamai, extract and cache cookies for direct HTTP reuse.
+    // These cookies work the same as manually-captured ones — skip the browser next time.
+    try {
+      const cookies = await ctx.cookies(['https://www.amtrak.com']);
+      if (cookies.length > 0) {
+        const cookieHeader = cookies.map((c) => `${c.name}=${c.value}`).join('; ');
+        setSession(cookieHeader);
+      }
+    } catch {}
+
     await dismissCookieBanner(page);
 
     // Simulate human presence to build behavioral trust score
@@ -566,7 +590,7 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
     }
 
     const best = captured.at(-1);
-    const trains = best ? parseTrains(best.body) : [];
+    const trains = best ? parseAmtrakResponse(best.body) : [];
 
     return {
       origin: params.origin,
@@ -581,31 +605,34 @@ export async function searchTrains(params: SearchParams): Promise<SearchResult> 
 }
 
 // ─── Parsing ────────────────────────────────────────────────────────────────
+// Confirmed structure from real API response (testing/curltestoutput.txt):
+//   { success: true, data: { journeyLegs: [{ journeyLegOptions: [...] }] } }
+//
+// Exported so session-client.ts can reuse the same logic.
 
-function parseTrains(raw: unknown): Train[] {
+export function parseAmtrakResponse(raw: unknown): Train[] {
   if (!raw || typeof raw !== 'object') return [];
-
   const obj = raw as Record<string, unknown>;
-  const candidates: unknown[] =
-    (obj.trainData as unknown[]) ??
-    (obj.trips as unknown[]) ??
-    (obj.results as unknown[]) ??
-    (obj.trains as unknown[]) ??
-    (obj.segments as unknown[]) ??
-    (Array.isArray(raw) ? (raw as unknown[]) : []);
 
-  if (candidates.length === 0) {
-    if (DEBUG_XHR) {
-      console.warn('[parse] No train array found. Top-level keys:', Object.keys(obj));
-    }
+  // Unwrap { success, data } envelope
+  const data = (obj.success && obj.data ? obj.data : obj) as Record<string, unknown>;
+  const legs = data.journeyLegs as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(legs) || legs.length === 0) {
+    console.warn('[parse] journeyLegs not found. Top-level keys:', Object.keys(obj).join(', '));
     return [];
   }
 
-  return candidates.map((t) => parseTrain(t as Record<string, unknown>));
+  const options = legs[0]?.journeyLegOptions as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(options)) return [];
+
+  return options.map(parseJourneyLegOption).filter((t): t is Train => t !== null);
 }
 
-function parseTrain(t: Record<string, unknown>): Train {
-  const fares = parseFares(t);
+function parseJourneyLegOption(opt: Record<string, unknown>): Train | null {
+  const travelLegs = opt.travelLegs as Array<Record<string, unknown>> | undefined;
+  const service = (travelLegs?.[0]?.travelService ?? {}) as Record<string, unknown>;
+
+  const fares = parseAccommodations(opt);
   const cheapest = fares
     .filter((f) => f.available && f.price_cents !== null)
     .reduce<number | null>((min, f) => {
@@ -613,51 +640,43 @@ function parseTrain(t: Record<string, unknown>): Train {
       return min === null ? f.price_cents : Math.min(min, f.price_cents);
     }, null);
 
+  const origin = (opt.origin ?? {}) as Record<string, unknown>;
+  const dest = (opt.destination ?? {}) as Record<string, unknown>;
+  const originSched = (origin.schedule ?? {}) as Record<string, unknown>;
+  const destSched = (dest.schedule ?? {}) as Record<string, unknown>;
+
   return {
-    number: String(t.trainNumber ?? t.number ?? t.train_number ?? ''),
-    name: String(t.trainName ?? t.name ?? t.routeName ?? t.route ?? ''),
-    departs_at: String(t.departureDateTime ?? t.departs ?? t.departTime ?? t.originDepartureTime ?? ''),
-    arrives_at: String(t.arrivalDateTime ?? t.arrives ?? t.arrivalTime ?? t.destArrivalTime ?? ''),
-    duration_minutes: parseDuration(t),
+    number: String(service.number ?? ''),
+    name: String(service.name ?? ''),
+    departs_at: String(originSched.departureDateTime ?? ''),
+    arrives_at: String(destSched.arrivalDateTime ?? ''),
+    duration_minutes: typeof opt.elapsedSeconds === 'number' ? Math.round(opt.elapsedSeconds / 60) : 0,
     fares,
     cheapest_cents: cheapest,
   };
 }
 
-function parseFares(t: Record<string, unknown>): FareOption[] {
-  const rawFares =
-    (t.fares as unknown[]) ??
-    (t.fareOptions as unknown[]) ??
-    (t.prices as unknown[]) ??
-    (t.fareClasses as unknown[]) ??
-    [];
+function parseAccommodations(opt: Record<string, unknown>): FareOption[] {
+  const accs = opt.reservableAccommodations as Array<Record<string, unknown>> | undefined;
+  if (!Array.isArray(accs)) return [];
 
-  if (rawFares.length > 0) {
-    return rawFares.map((f) => {
-      const fare = f as Record<string, unknown>;
-      const price = parsePrice(fare.price ?? fare.amount ?? fare.cost ?? fare.lowestFare);
-      return {
-        fare_class: String(fare.class ?? fare.fareClass ?? fare.type ?? fare.classCode ?? ''),
-        fare_type: String(fare.fareType ?? fare.tier ?? fare.bucketCode ?? 'Standard'),
-        price_cents: price,
-        available: price !== null && (fare.available as boolean) !== false && (fare.soldOut as boolean) !== true,
-      };
-    });
-  }
+  return accs.map((acc) => {
+    const fareAmt = ((acc.accommodationFare ?? {}) as Record<string, unknown>);
+    const dollars = ((fareAmt.dollarsAmount ?? {}) as Record<string, unknown>);
+    const totalStr = String(dollars.total ?? '0');
+    const priceCents = Math.round(parseFloat(totalStr) * 100);
 
-  // Flat top-level price fields
-  const classMap: Record<string, string> = {
-    coachPrice: 'Coach', businessPrice: 'Business', firstClassPrice: 'First Class',
-    roomettePrice: 'Roomette', bedroomPrice: 'Bedroom', accomodationsPrice: 'Accommodation',
-  };
-  const fares: FareOption[] = [];
-  for (const [key, label] of Object.entries(classMap)) {
-    if (key in t) {
-      const price = parsePrice(t[key]);
-      fares.push({ fare_class: label, fare_type: 'Standard', price_cents: price, available: price !== null });
-    }
-  }
-  return fares;
+    const legAccs = acc.travelLegAccommodations as Array<Record<string, unknown>> | undefined;
+    const product = (legAccs?.[0]?.reservableProduct ?? {}) as Record<string, unknown>;
+    const inventory = typeof product.availableInventory === 'number' ? product.availableInventory : 1;
+
+    return {
+      fare_class: String(acc.travelClass ?? ''),
+      fare_type: String(acc.fareFamily ?? 'Standard'),
+      price_cents: priceCents > 0 ? priceCents : null,
+      available: inventory > 0 && priceCents > 0,
+    };
+  });
 }
 
 function parsePrice(raw: unknown): number | null {
@@ -665,18 +684,4 @@ function parsePrice(raw: unknown): number | null {
   const num = typeof raw === 'number' ? raw : parseFloat(String(raw).replace(/[^0-9.]/g, ''));
   if (isNaN(num) || num <= 0) return null;
   return num < 10000 ? Math.round(num * 100) : Math.round(num);
-}
-
-function parseDuration(t: Record<string, unknown>): number {
-  const raw = t.travelTime ?? t.duration ?? t.durationMinutes ?? t.tripDuration;
-  if (typeof raw === 'number') return raw;
-  if (typeof raw === 'string') {
-    const hm = raw.match(/(\d+)h\s*(\d+)?m?/);
-    if (hm) return parseInt(hm[1]) * 60 + parseInt(hm[2] ?? '0');
-    const colonMatch = raw.match(/^(\d+):(\d+)/);
-    if (colonMatch) return parseInt(colonMatch[1]) * 60 + parseInt(colonMatch[2]);
-    const mins = parseInt(raw);
-    if (!isNaN(mins)) return mins;
-  }
-  return 0;
 }

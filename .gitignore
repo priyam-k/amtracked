@@ -39,3 +39,7 @@ playwright-browsers/
 # Misc
 .cache/
 .turbo/
+
+# Test/dev scratch files (may contain real session tokens)
+testing/
+output.txt
