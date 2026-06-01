@@ -614,11 +614,12 @@ export function parseAmtrakResponse(raw: unknown): Train[] {
   if (!raw || typeof raw !== 'object') return [];
   const obj = raw as Record<string, unknown>;
 
-  // Unwrap { success, data } envelope
+  // Unwrap { success, data: { journeySolutionOption: { journeyLegs: [...] } } }
   const data = (obj.success && obj.data ? obj.data : obj) as Record<string, unknown>;
-  const legs = data.journeyLegs as Array<Record<string, unknown>> | undefined;
+  const solution = (data.journeySolutionOption ?? data) as Record<string, unknown>;
+  const legs = solution.journeyLegs as Array<Record<string, unknown>> | undefined;
   if (!Array.isArray(legs) || legs.length === 0) {
-    console.warn('[parse] journeyLegs not found. Top-level keys:', Object.keys(obj).join(', '));
+    console.warn('[parse] journeyLegs not found. data keys:', Object.keys(data).join(', '));
     return [];
   }
 
