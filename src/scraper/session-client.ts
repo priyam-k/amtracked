@@ -90,9 +90,27 @@ export async function searchWithSession(
     );
   }
 
-  const json = await resp.json() as unknown;
+  const rawText = await resp.text();
+  let json: unknown;
+  try {
+    json = JSON.parse(rawText);
+  } catch {
+    throw new Error(`Response was not JSON: ${rawText.slice(0, 200)}`);
+  }
+
   const trains = parseAmtrakResponse(json);
   console.log(`[session-client] Parsed ${trains.length} train(s)`);
+
+  if (trains.length === 0) {
+    // Log enough of the structure to diagnose parser mismatches
+    const obj = json as Record<string, unknown>;
+    const topKeys = Object.keys(obj).join(', ');
+    const dataKeys = obj.data && typeof obj.data === 'object'
+      ? Object.keys(obj.data as object).join(', ')
+      : '(no data key)';
+    console.warn(`[session-client] 0 trains parsed. Top keys: [${topKeys}] | data keys: [${dataKeys}]`);
+    console.warn(`[session-client] Raw snippet: ${rawText.slice(0, 400)}`);
+  }
 
   return {
     origin: params.origin,
