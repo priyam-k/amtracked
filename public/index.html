@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>amtracked</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    .tab-btn.active { @apply border-b-2 border-blue-500 text-blue-600; }
+    .spinner { border: 3px solid #e5e7eb; border-top-color: #3b82f6; border-radius: 50%; width: 24px; height: 24px; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-gray-50 text-gray-800 min-h-screen">
+  <div class="max-w-5xl mx-auto px-4 py-8">
+    <h1 class="text-2xl font-bold mb-1">amtracked</h1>
+    <p class="text-gray-500 text-sm mb-6">Amtrak fare tracker</p>
+
+    <!-- Tabs -->
+    <div class="flex gap-6 border-b border-gray-200 mb-6">
+      <button class="tab-btn pb-2 font-medium text-sm active" data-tab="weekend">Weekend Round-Trip</button>
+      <button class="tab-btn pb-2 font-medium text-sm text-gray-500 hover:text-gray-700" data-tab="single">Single Search</button>
+      <button class="tab-btn pb-2 font-medium text-sm text-gray-500 hover:text-gray-700" data-tab="snapshots">Snapshots</button>
+    </div>
+
+    <!-- Weekend Round-Trip Tab -->
+    <div id="tab-weekend" class="tab-panel">
+      <form id="weekend-form" class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 mb-6">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Origin</label>
+            <input name="origin" value="WAS" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm uppercase" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Destination</label>
+            <input name="destination" value="TRE" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm uppercase" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Weeks Ahead</label>
+            <input name="weeks_ahead" type="number" min="1" max="8" value="4" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Outbound Min Hour (24h)</label>
+            <input name="outbound_min_hour" type="number" min="0" max="23" value="18" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Return Min Hour (24h)</label>
+            <input name="return_min_hour" type="number" min="0" max="23" value="12" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+          </div>
+          <div class="flex items-end pb-1.5">
+            <label class="flex items-center gap-2 text-sm text-gray-600">
+              <input name="include_thu_mon" type="checkbox" class="rounded" />
+              Include Thu/Mon
+            </label>
+          </div>
+        </div>
+        <div class="mt-4 flex items-center gap-3">
+          <button type="submit" class="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700">Search Weekends</button>
+          <div id="weekend-spinner" class="spinner hidden"></div>
+          <span id="weekend-status" class="text-sm text-gray-500"></span>
+        </div>
+      </form>
+
+      <div id="weekend-results" class="hidden">
+        <h2 class="text-base font-semibold mb-3">Best Round-Trip Combos</h2>
+        <div class="overflow-x-auto rounded-lg border border-gray-200 shadow-sm mb-6">
+          <table class="w-full text-sm">
+            <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+              <tr>
+                <th class="px-4 py-2 text-left">Weekend</th>
+                <th class="px-4 py-2 text-left">Outbound Train</th>
+                <th class="px-4 py-2 text-left">Departs</th>
+                <th class="px-4 py-2 text-left">Return Train</th>
+                <th class="px-4 py-2 text-left">Departs</th>
+                <th class="px-4 py-2 text-right">Total</th>
+              </tr>
+            </thead>
+            <tbody id="combos-body" class="divide-y divide-gray-100"></tbody>
+          </table>
+        </div>
+
+        <h2 class="text-base font-semibold mb-3">Per-Weekend Details</h2>
+        <div id="weekend-details" class="space-y-4"></div>
+      </div>
+    </div>
+
+    <!-- Single Search Tab -->
+    <div id="tab-single" class="tab-panel hidden">
+      <form id="single-form" class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 mb-6">
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Origin</label>
+            <input name="origin" placeholder="WAS" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm uppercase" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Destination</label>
+            <input name="destination" placeholder="TRE" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm uppercase" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Date (YYYY-MM-DD)</label>
+            <input name="travel_date" type="date" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+          </div>
+        </div>
+        <div class="mt-4 flex items-center gap-3">
+          <button type="submit" class="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700">Search</button>
+          <div id="single-spinner" class="spinner hidden"></div>
+          <span id="single-status" class="text-sm text-gray-500"></span>
+        </div>
+      </form>
+      <div id="single-results" class="hidden overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+            <tr>
+              <th class="px-4 py-2 text-left">Train</th>
+              <th class="px-4 py-2 text-left">Departs</th>
+              <th class="px-4 py-2 text-left">Arrives</th>
+              <th class="px-4 py-2 text-left">Duration</th>
+              <th class="px-4 py-2 text-right">Cheapest</th>
+              <th class="px-4 py-2 text-left">Fares</th>
+            </tr>
+          </thead>
+          <tbody id="single-body" class="divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Snapshots Tab -->
+    <div id="tab-snapshots" class="tab-panel hidden">
+      <form id="snap-form" class="bg-white rounded-lg shadow-sm border border-gray-200 p-5 mb-6">
+        <div class="grid grid-cols-3 gap-4">
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Origin</label>
+            <input name="origin" placeholder="WAS" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm uppercase" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Destination</label>
+            <input name="destination" placeholder="TRE" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm uppercase" />
+          </div>
+          <div>
+            <label class="block text-xs font-medium text-gray-600 mb-1">Travel Date (optional)</label>
+            <input name="travel_date" type="date" class="w-full border border-gray-300 rounded px-3 py-1.5 text-sm" />
+          </div>
+        </div>
+        <div class="mt-4 flex items-center gap-3">
+          <button type="submit" class="bg-blue-600 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-700">Load Snapshots</button>
+          <div id="snap-spinner" class="spinner hidden"></div>
+          <span id="snap-status" class="text-sm text-gray-500"></span>
+        </div>
+      </form>
+      <div id="snap-results" class="hidden overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+        <table class="w-full text-sm">
+          <thead class="bg-gray-50 text-xs text-gray-500 uppercase">
+            <tr>
+              <th class="px-4 py-2 text-left">Scraped At</th>
+              <th class="px-4 py-2 text-left">Route</th>
+              <th class="px-4 py-2 text-left">Travel Date</th>
+              <th class="px-4 py-2 text-right">Min Price</th>
+              <th class="px-4 py-2 text-right">Trains</th>
+            </tr>
+          </thead>
+          <tbody id="snap-body" class="divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Tab switching
+    document.querySelectorAll('.tab-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.tab-btn').forEach(b => {
+          b.classList.remove('active', 'border-b-2', 'border-blue-500', 'text-blue-600');
+          b.classList.add('text-gray-500');
+        });
+        btn.classList.add('active', 'border-b-2', 'border-blue-500', 'text-blue-600');
+        btn.classList.remove('text-gray-500');
+        document.querySelectorAll('.tab-panel').forEach(p => p.classList.add('hidden'));
+        document.getElementById('tab-' + btn.dataset.tab).classList.remove('hidden');
+      });
+    });
+
+    function fmt(cents) {
+      return cents != null ? '$' + (cents / 100).toFixed(2) : '—';
+    }
+    function fmtTime(iso) {
+      if (!iso) return '—';
+      return iso.slice(11, 16);
+    }
+    function fmtDate(ymd) {
+      if (!ymd) return '—';
+      const d = new Date(ymd + 'T12:00:00');
+      return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+    }
+    function fmtDuration(min) {
+      return Math.floor(min / 60) + 'h ' + (min % 60) + 'm';
+    }
+
+    // ─── Weekend Round-Trip ───────────────────────────────────────────────
+    document.getElementById('weekend-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const body = {
+        origin: form.origin.value.toUpperCase(),
+        destination: form.destination.value.toUpperCase(),
+        weeks_ahead: parseInt(form.weeks_ahead.value),
+        outbound_min_hour: parseInt(form.outbound_min_hour.value),
+        return_min_hour: parseInt(form.return_min_hour.value),
+        include_thu_mon: form.include_thu_mon.checked,
+      };
+
+      const spinner = document.getElementById('weekend-spinner');
+      const status = document.getElementById('weekend-status');
+      const results = document.getElementById('weekend-results');
+      spinner.classList.remove('hidden');
+      status.textContent = 'Searching — this may take a minute…';
+      results.classList.add('hidden');
+
+      try {
+        const res = await fetch('/weekend-roundtrip', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          status.textContent = 'Error: ' + (data.error || res.statusText);
+          return;
+        }
+
+        // Best combos table
+        const combosBody = document.getElementById('combos-body');
+        combosBody.innerHTML = '';
+        if (!data.best_combos || data.best_combos.length === 0) {
+          combosBody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-gray-400">No round-trip combos found. Check session cookies or widen time filters.</td></tr>';
+        } else {
+          data.best_combos.forEach(combo => {
+            const tr = document.createElement('tr');
+            tr.className = 'hover:bg-gray-50';
+            tr.innerHTML = `
+              <td class="px-4 py-2 text-gray-500">${fmtDate(combo.weekend.friday)} – ${fmtDate(combo.weekend.sunday)}</td>
+              <td class="px-4 py-2 font-medium">#${combo.outbound.number} ${combo.outbound.name}</td>
+              <td class="px-4 py-2">${fmtTime(combo.outbound.departs_at)}</td>
+              <td class="px-4 py-2 font-medium">#${combo.return.number} ${combo.return.name}</td>
+              <td class="px-4 py-2">${fmtTime(combo.return.departs_at)}</td>
+              <td class="px-4 py-2 text-right font-semibold text-green-700">${fmt(combo.total_cents)}</td>
+            `;
+            combosBody.appendChild(tr);
+          });
+        }
+
+        // Per-weekend details
+        const details = document.getElementById('weekend-details');
+        details.innerHTML = '';
+        (data.weekends || []).forEach(wk => {
+          const section = document.createElement('div');
+          section.className = 'bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden';
+          const label = fmtDate(wk.friday) + ' → ' + fmtDate(wk.sunday);
+          section.innerHTML = `
+            <button class="w-full text-left px-4 py-3 font-medium text-sm flex justify-between items-center hover:bg-gray-50 weekend-toggle">
+              <span>${label}</span>
+              <span class="text-gray-400 text-xs">${wk.outbound_trains.length} outbound · ${wk.return_trains.length} return</span>
+            </button>
+            <div class="weekend-body hidden border-t border-gray-100">
+              ${trainTable('Outbound (' + body.origin + '→' + body.destination + ')', wk.outbound_trains)}
+              ${trainTable('Return (' + body.destination + '→' + body.origin + ')', wk.return_trains)}
+            </div>
+          `;
+          details.appendChild(section);
+        });
+
+        // Toggle
+        details.querySelectorAll('.weekend-toggle').forEach(btn => {
+          btn.addEventListener('click', () => {
+            btn.nextElementSibling.classList.toggle('hidden');
+          });
+        });
+
+        if (data.errors && data.errors.length) {
+          status.textContent = data.errors.length + ' search(es) failed — check console';
+          console.warn('Weekend search errors:', data.errors);
+        } else {
+          status.textContent = '';
+        }
+
+        results.classList.remove('hidden');
+      } catch (err) {
+        status.textContent = 'Request failed: ' + err.message;
+      } finally {
+        spinner.classList.add('hidden');
+      }
+    });
+
+    function trainTable(label, trains) {
+      if (!trains || trains.length === 0) {
+        return `<div class="px-4 py-3 text-sm text-gray-400">${label}: no trains in window</div>`;
+      }
+      const rows = trains.map(t => `
+        <tr class="hover:bg-gray-50">
+          <td class="px-4 py-1.5 font-medium">#${t.number} ${t.name}</td>
+          <td class="px-4 py-1.5">${fmtTime(t.departs_at)}</td>
+          <td class="px-4 py-1.5">${fmtTime(t.arrives_at)}</td>
+          <td class="px-4 py-1.5">${fmtDuration(t.duration_minutes)}</td>
+          <td class="px-4 py-1.5 text-right font-semibold text-green-700">${fmt(t.cheapest_cents)}</td>
+        </tr>
+      `).join('');
+      return `
+        <div class="px-4 pt-3 pb-1 text-xs font-semibold text-gray-500 uppercase">${label}</div>
+        <table class="w-full text-sm mb-2">
+          <tbody class="divide-y divide-gray-100">${rows}</tbody>
+        </table>
+      `;
+    }
+
+    // ─── Single Search ────────────────────────────────────────────────────
+    document.getElementById('single-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const spinner = document.getElementById('single-spinner');
+      const status = document.getElementById('single-status');
+      const results = document.getElementById('single-results');
+      spinner.classList.remove('hidden');
+      status.textContent = 'Searching…';
+      results.classList.add('hidden');
+
+      try {
+        const res = await fetch('/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            origin: form.origin.value.toUpperCase(),
+            destination: form.destination.value.toUpperCase(),
+            travel_date: form.travel_date.value,
+            save: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) { status.textContent = 'Error: ' + (data.error || res.statusText); return; }
+
+        const tbody = document.getElementById('single-body');
+        tbody.innerHTML = '';
+        (data.trains || []).forEach(t => {
+          const fareStr = t.fares
+            .filter(f => f.available)
+            .map(f => `${f.fare_class} ${fmt(f.price_cents)}`)
+            .join(' · ');
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-gray-50';
+          tr.innerHTML = `
+            <td class="px-4 py-2 font-medium">#${t.number} ${t.name}</td>
+            <td class="px-4 py-2">${fmtTime(t.departs_at)}</td>
+            <td class="px-4 py-2">${fmtTime(t.arrives_at)}</td>
+            <td class="px-4 py-2 text-gray-500">${fmtDuration(t.duration_minutes)}</td>
+            <td class="px-4 py-2 text-right font-semibold text-green-700">${fmt(t.cheapest_cents)}</td>
+            <td class="px-4 py-2 text-xs text-gray-500">${fareStr || '—'}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+        if (!data.trains || data.trains.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="px-4 py-4 text-center text-gray-400">No trains found.</td></tr>';
+        }
+        status.textContent = (data.trains || []).length + ' train(s) found';
+        results.classList.remove('hidden');
+      } catch (err) {
+        status.textContent = 'Request failed: ' + err.message;
+      } finally {
+        spinner.classList.add('hidden');
+      }
+    });
+
+    // ─── Snapshots ────────────────────────────────────────────────────────
+    document.getElementById('snap-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = e.target;
+      const spinner = document.getElementById('snap-spinner');
+      const status = document.getElementById('snap-status');
+      const results = document.getElementById('snap-results');
+      spinner.classList.remove('hidden');
+      status.textContent = 'Loading…';
+      results.classList.add('hidden');
+
+      try {
+        const params = new URLSearchParams({
+          origin: form.origin.value.toUpperCase(),
+          destination: form.destination.value.toUpperCase(),
+        });
+        if (form.travel_date.value) params.set('date', form.travel_date.value);
+        const res = await fetch('/snapshots?' + params);
+        const data = await res.json();
+        if (!res.ok) { status.textContent = 'Error: ' + (data.error || res.statusText); return; }
+
+        const tbody = document.getElementById('snap-body');
+        tbody.innerHTML = '';
+        (data || []).forEach(snap => {
+          const tr = document.createElement('tr');
+          tr.className = 'hover:bg-gray-50';
+          tr.innerHTML = `
+            <td class="px-4 py-2 text-gray-500 text-xs">${new Date(snap.scraped_at).toLocaleString()}</td>
+            <td class="px-4 py-2">${snap.origin} → ${snap.destination}</td>
+            <td class="px-4 py-2">${snap.travel_date}</td>
+            <td class="px-4 py-2 text-right font-semibold text-green-700">${fmt(snap.min_price_cents)}</td>
+            <td class="px-4 py-2 text-right text-gray-500">${(snap.trains || []).length}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+        if (!data || data.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-4 text-center text-gray-400">No snapshots found.</td></tr>';
+        }
+        status.textContent = (data || []).length + ' snapshot(s)';
+        results.classList.remove('hidden');
+      } catch (err) {
+        status.textContent = 'Request failed: ' + err.message;
+      } finally {
+        spinner.classList.add('hidden');
+      }
+    });
+  </script>
+</body>
+</html>

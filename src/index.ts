@@ -16,10 +16,11 @@ startScheduler();
 const app = createApp();
 app.listen(PORT, () => {
   console.log(`[server] amtracked running on http://localhost:${PORT}`);
+  console.log(`[server] Web UI: http://localhost:${PORT}`);
   console.log('[server] Endpoints:');
-  console.log('[server]   POST /search          - search trains (triggers scraper)');
-  console.log('[server]   GET  /snapshots        - query historical price snapshots');
-  console.log('[server]   GET  /routes           - list saved routes');
-  console.log('[server]   POST /routes           - add a saved route');
-  console.log('[server]   DELETE /routes/:id     - remove a saved route');
+  console.log('[server]   POST /weekend-roundtrip - search WAS↔TRE across upcoming weekends');
+  console.log('[server]   POST /search            - search trains (triggers scraper)');
+  console.log('[server]   GET  /snapshots         - query historical price snapshots');
+  console.log('[server]   GET  /routes            - list saved routes');
+  console.log('[server]   GET  /alerts            - list price alerts');
 });

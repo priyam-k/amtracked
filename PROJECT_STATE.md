@@ -1,84 +1,113 @@
 # Project State
 
-## Status: Phase 1 Complete (Blocked on Akamai 403)
+## Status: Core Infrastructure Complete — Building Search UI
 
-## Last Session (2026-05-22)
-
-Built the full Phase 1 stack. Core blocker discovered and documented.
+## Last Session (2026-06-12)
 
 ### What's Built
-- **Playwright scraper** (`src/scraper/`): Full Amtrak.com form automation
-  - Selects From/To stations from Angular ng-bootstrap comboboxes
-  - Opens ng-bootstrap calendar date picker and selects target date
-  - Triggers Angular form submission (fixes pointer-events: none on FIND TRAINS button)
-  - Confirmed: Angular makes POST to `/dotcom/journey-solution-option`
-- **Direct API client** (`src/scraper/api.ts`): Calls the endpoint from browser context
-- **SQLite data layer** (`src/db/`): schema, client, typed query helpers
-- **Express API** (`src/index.ts`, `src/api/`): /search, /snapshots, /routes, /alerts (stub)
-- **playwright-extra + stealth plugin** applied
 
-### Confirmed Search API
-```
-POST https://www.amtrak.com/dotcom/journey-solution-option
-Content-Type: application/json
-x-amtrak-trace-id: <uuid><timestamp-ms>
+**Akamai bypass — session cookie approach**
+- Copy full DevTools cURL from `amtrak.com` → paste into `.amtrak-curl` in project root
+- `parseCurlCommand()` extracts the `-b '...'` cookie string; no manual editing needed
+- Cookies are query-agnostic (same token works for any origin/destination)
+- Empirically valid for 24h+ (detected via 403, not by TTL); `~-1~` in `_abck` = high allowance
+- `src/scraper/session.ts` — priority order: `.amtrak-curl` → `AMTRAK_CURL` env → `AMTRAK_COOKIES` env → memory cache → `~/.amtracked/session.json`
 
-{
-  "journeyRequest": {
-    "fare": { "pricingUnit": "DOLLARS" },
-    "type": "OW",
-    "journeyLegRequests": [{
-      "origin": { "code": "NYP", "schedule": { "departureDateTime": "2026-07-15T00:00:00" } },
-      "destination": { "code": "WAS" },
-      "passengers": [{ "id": "P1", "type": "F", "initialType": "adult" }]
-    }],
-    "customer": { "tierStatus": "MEMBER" },
-    "isPassRider": false,
-    "isCorporateTraveller": false,
-    "tripTags": true,
-    "singleAdultFare": true,
-    "cascadesWSDOTFilter": false,
-    "xDelay": "60"
-  },
-  "initialJourneyLegOnly": false,
-  "reservableAccomodationOptions": "ALL"
-}
-```
+**Direct HTTP search client**
+- `src/scraper/session-client.ts` — `searchWithSession(cookies, params)` → `SearchResult`
+- POST to `https://www.amtrak.com/dotcom/journey-solution-option` with real Chrome headers
+- `AbortController` 15s timeout; detects 403 / Access Denied / 502 body to surface session expiry
+- `src/scraper/amtrak.ts` — `searchTrains()` tries session first, falls back to Playwright if no session
 
-### Core Blocker
-- **Akamai Bot Manager returns HTTP 403** for `/dotcom/journey-solution-option`
-- Headless Chromium: classic "Access Denied" Akamai block
-- Headed Chromium (on Mac): Amtrak backend 403 (possible missing session state or CSRF)
-- `sec-ch-ua` header fix applied, playwright-extra stealth plugin applied — still blocked
-- Known bypass approaches to try: residential proxy, curl-impersonate for TLS fingerprinting
+**Playwright fallback**
+- `src/scraper/browser.ts` — real Chrome binary, `~/.amtracked/chrome-profile` persistent context
+- `page.route()` intercepts `journey-solution-option` before Angular navigates away
+- After successful navigation: extracts cookies from browser context and calls `setSession()`
 
-## What's Next
+**Parser**
+- `parseAmtrakResponse()` in `src/scraper/amtrak.ts` — correct path:
+  `data.journeySolutionOption.journeyLegs[0].journeyLegOptions[]`
+- Exported and shared by both `amtrak.ts` and `session-client.ts`
 
-### Immediate: Fix the 403 (options in priority order)
-1. **Residential proxy**: Route Playwright through a residential IP/proxy service (e.g. BrightData, Oxylabs). Akamai trusts residential IPs.
-2. **curl-impersonate / fetch-h2**: Replicate Chrome's TLS fingerprint (JA3/JA4) from Node.js — bypasses Akamai at the protocol level.
-3. **Puppeteer with real Chrome**: Use the user's actual Chrome binary (not Playwright's Chromium) in headed mode; the exact TLS/browser fingerprint matches what Akamai expects.
-4. **CSRF token investigation**: Explore if `/libs/granite/csrf/token.json` returns a token when properly authenticated.
+**Data layer** (`src/db/`)
+- SQLite via `better-sqlite3`; schema: `price_snapshots`, `routes`, `alerts`
+- `saveSnapshot()`, `getSnapshots()`, `getLatestSnapshot()`
+- `createAlert()`, `getAlerts()`, `getActiveAlerts()`, `deleteAlert()`
 
-### After 403 fixed
-- **Phase 2**: Filtering/sorting in API + minimal web UI (Vite+React or plain HTML)
-- **Phase 3**: node-cron scheduler polling saved routes, saving snapshots
-- **Phase 4**: Price alert logic (compare snapshot vs. threshold, notify via console/email)
+**REST API** (`src/api/`)
+- `POST /search` — trigger single-route search, optionally save snapshot
+- `GET /snapshots` — query snapshot history with filters (route, date, max price, sort)
+- `GET/POST/DELETE /routes` — saved routes CRUD
+- `GET/POST/DELETE /alerts` — price alert CRUD
+
+**Scheduler** (`src/scheduler/index.ts`)
+- `node-cron` polling every `POLL_INTERVAL_MINUTES` (default 60)
+- Per-alert: searches, saves snapshot, checks price threshold
+- macOS `osascript` notification when price drops below threshold
+- Halts and clears session on 403
+
+### What's Next
+
+**Immediate (this session):**
+1. Weekend round-trip search endpoint (`POST /weekend-roundtrip`) — check WAS↔TRE across
+   multiple upcoming Fridays/Sundays with time-of-day filters
+2. Light web UI (`public/index.html`) — served from Express, 3 tabs:
+   - Weekend round-trip form + results
+   - Single search
+   - Snapshot history browser
+
+**Later:**
+- Natural language search ("cheapest WAS-TRE this month")
+- Check if good WAS-TRE trains stop at NCR or PJC (better intermediate stops)
+- Chrome extension to auto-refresh session from any amtrak.com browser search
 
 ## Key File Map
-- `src/scraper/amtrak.ts` — Playwright form automation (Angular booking widget)
-- `src/scraper/api.ts` — Direct API client (POST /dotcom/journey-solution-option)
-- `src/scraper/browser.ts` — Chromium browser context with stealth settings
-- `src/db/` — SQLite schema, client, typed queries
-- `src/api/` — Express REST API
-- `src/index.ts` — Server entrypoint (PORT=3000)
-- `scripts/test-api.ts` — Quick API test (run with `npm run test:api`)
-- `scripts/test-scraper.ts` — Full scraper test (run with `npm run test:scraper`)
+
+```
+src/
+  scraper/
+    amtrak.ts          — searchTrains() with session-first + Playwright fallback
+    session.ts         — cookie load/store (parseCurlCommand, getSession, setSession)
+    session-client.ts  — searchWithSession() — direct HTTP, no Playwright
+    browser.ts         — Playwright persistent Chrome context
+    api.ts             — (legacy direct API client, superseded by session-client.ts)
+  db/
+    schema.ts          — SQLite DDL
+    client.ts          — getDb() singleton
+    queries.ts         — all typed query helpers
+  api/
+    index.ts           — createApp() — Express setup
+    routes/
+      search.ts        — POST /search
+      snapshots.ts     — GET /snapshots
+      routes.ts        — /routes CRUD
+      alerts.ts        — /alerts CRUD
+      weekend.ts       — POST /weekend-roundtrip  (TODO)
+  scheduler/index.ts   — cron polling + threshold alerts
+  types.ts             — shared TypeScript interfaces
+  index.ts             — server entrypoint
+scripts/
+  test-session.ts      — fires 3 queries to validate session cookies
+  test-scraper.ts      — full Playwright form test
+  test-api.ts          — direct API test
+public/
+  index.html           — web UI (TODO)
+```
 
 ## Running Locally
+
 ```bash
-npm run dev          # start server on :3000
-npm run test:api     # test direct API call
-npm run test:scraper # test full form automation scraper
-DEBUG_XHR=true npm run test:scraper  # with verbose XHR logging
+npm run dev                     # start server on :3000 (auto-restart via nodemon)
+npm run test:session            # validate .amtrak-curl works, fires 3 searches
+npm run test:scraper            # full Playwright automation test
+DEBUG_XHR=true npm run test:scraper  # verbose XHR logging
 ```
+
+## Session Refresh
+
+When searches start returning 403:
+1. Go to `amtrak.com` in Chrome
+2. Do any search
+3. DevTools → Network → `journey-solution-option` → right-click → Copy as cURL
+4. Paste (replacing contents) into `.amtrak-curl` in project root
+5. Done — next search picks it up automatically
